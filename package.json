@@ -7,7 +7,9 @@
     "type": "git",
     "url": "git@github.com:dasmoth/dalliance.git"
   },
-  "scripts": "gulp",
+  "scripts": {
+    "build": "gulp"
+  },
   "dependencies": {
     "jszlib": "dasmoth/jszlib",
     "es6-promise": "~0.1.1",
