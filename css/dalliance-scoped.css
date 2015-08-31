@@ -44,11 +44,11 @@
 *.dalliance .track-label {
   font-size: 10pt;
   line-height: 15px;
-  position: absolute;
+  position: relative;
+  display: block;
   z-index: 1001;
   left: 2px;
   top: 2px;
-  display: inline-block;
   opacity: 0.8;
 }
 
@@ -324,6 +324,7 @@
   border: 0px;
   left: -1000px;
   min-height: 200px;
+  top: 20px;
 }
 
 *.dalliance .viewport-overlay {
@@ -341,7 +342,7 @@
   padding: 0px;
   margin: 0px;
   border: 0px;
-  top: 0px;
+  top: 20px;
   display: none;
   pointer-events: none;
 }
