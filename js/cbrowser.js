@@ -1,6 +1,6 @@
 /* -*- mode: javascript; c-basic-offset: 4; indent-tabs-mode: nil -*- */
 
-// 
+//
 // Dalliance Genome Explorer
 // (c) Thomas Down 2006-2011
 //
@@ -43,6 +43,15 @@ if (typeof(require) !== 'undefined') {
     var sourcesAreEqualModuloStyle = sourcecompare.sourcesAreEqualModuloStyle;
     var sourceDataURI = sourcecompare.sourceDataURI;
     var sourceStyleURI = sourcecompare.sourceStyleURI;
+
+    var DefaultRenderer = require('./default-renderer.es6');
+    var OldRenderer = require('./old-renderer.js');
+
+    var MultiRenderer = require('./multi-renderer.es6');
+    var SubRenderer = require('./sub-renderer.es6');
+
+    var TestRenderer = require('./test-renderer.es6');
+    var DummyRenderer = require('./dummy-renderer.es6');
 }
 
 function Region(chr, min, max) {
@@ -56,7 +65,18 @@ function Browser(opts) {
         opts = {};
     }
 
-    this.prefix = '//www.biodalliance.org/release-0.13/';
+    this.renderers =
+        { 'default': DefaultRenderer,
+          'dummy': DummyRenderer,
+          'multi': MultiRenderer,
+          'sub': SubRenderer,
+          'old': OldRenderer,
+          'test': TestRenderer
+        };
+
+    this.defaultRenderer = opts.renderer || DefaultRenderer;
+
+    this.prefix = '//www.biodalliance.org/release-0.14/';
 
     this.sources = [];
     this.tiers = [];
@@ -94,16 +114,21 @@ function Browser(opts) {
     this.maxViewWidth = 500000;
     this.defaultSubtierMax = 100;
 
+    this.highZoomThreshold = 0.2;
+    this.mediumZoomThreshold = 0.01
+
     // Options.
-    
+
     this.reverseScrolling = false;
     this.rulerLocation = 'center';
     this.defaultHighlightFill = 'red';
     this.defaultHighlightAlpha = 0.3;
     this.exportHighlights = true;
     this.exportRuler = true;
+    this.exportBanner = true;
+    this.exportRegion = true;
     this.singleBaseHighlight = true;
-    
+
     // Visual config.
 
     // this.tierBackgroundColors = ["rgb(245,245,245)", "rgb(230,230,250)" /* 'white' */];
@@ -126,15 +151,19 @@ function Browser(opts) {
     this.hubObjects = [];
 
     this.sourceCache = new SourceCache();
-    
+
     this.retina = true;
 
     this.useFetchWorkers = true;
     this.maxWorkers = 2;
     this.workerPath = '$$worker-all.js';
+    this.resolvers = {};
+    this.resolverSeed = 1;
 
     this.assemblyNamePrimary = true;
     this.assemblyNameUcsc = true;
+
+    this.defaultSearchRegionPadding = 10000;
 
     // HTTP warning support
 
@@ -271,7 +300,7 @@ Browser.prototype.realInit = function() {
     this.tierHolder = makeElement('div', this.makeLoader(24), {className: 'tier-holder tier-holder-rest'});
 
     this.locSingleBase = makeElement('span', '', {className: 'loc-single-base'});
-    var locSingleBaseHolder = makeElement('div', this.locSingleBase,{className: 'loc-single-base-holder'}); 
+    var locSingleBaseHolder = makeElement('div', this.locSingleBase,{className: 'loc-single-base-holder'});
     // Add listener to update single base location
     this.addViewListener(function(chr, minFloor, maxFloor, zoomSliderValue, zoomSliderDict, min, max) {
         // Just setting textContent causes layout flickering in Blink.
@@ -294,11 +323,11 @@ Browser.prototype.realInit = function() {
         this.bhtmlRoot.appendChild(makeElement('span', ['Powered by ', makeElement('a', 'Biodalliance', {href: 'http://www.biodalliance.org/'}), ' ' + VERSION], {className: 'powered-by'}));
     }
     this.browserHolder.appendChild(this.bhtmlRoot);
-    
+
     this.resizeListener = function(ev) {
         thisB.resizeViewer();
     };
-    window.addEventListener('resize', this.resizeListener, false);
+
     this.ruler = makeElement('div', null, {className: 'guideline'})
     this.ruler2 = makeElement('div', null, {className: 'single-base-guideline'});
     this.tierHolderHolder.appendChild(this.ruler);
@@ -327,7 +356,7 @@ Browser.prototype.realInit = function() {
     this.nextWorker = 0;
     promisedWorkers.then(function(v) {
         console.log('Booted ' + v.length + ' workers');
-        thisB.fetchWorkers = v; 
+        thisB.fetchWorkers = v;
     }, function(v) {
         console.log('Failed to boot workers', v);
     }).then(function() {
@@ -342,7 +371,7 @@ Browser.prototype.realInit = function() {
                 {
                     clearInterval(pollInterval);
                     thisB.realInit2();
-                } 
+                }
             }, 300);
         }
     });
@@ -356,6 +385,8 @@ Browser.prototype.realInit2 = function() {
     removeChildren(this.pinnedTierHolder);
 
     this.featurePanelWidth = this.tierHolder.getBoundingClientRect().width | thisB.offscreenInitWidth | 0;
+    window.addEventListener('resize', this.resizeListener, false);
+
     this.scale = this.featurePanelWidth / (this.viewEnd - this.viewStart);
     if (!this.zoomMax) {
         this.zoomMax = this.zoomExpt * Math.log(this.maxViewWidth / this.zoomBase);
@@ -383,7 +414,7 @@ Browser.prototype.realInit2 = function() {
             }
             thisB.tierHolder.scrollTop += delta;
         }
-    }, false); 
+    }, false);
 
     this.tierHolderHolder.addEventListener('MozMousePixelScroll', function(ev) {
         ev.stopPropagation(); ev.preventDefault();
@@ -403,7 +434,7 @@ Browser.prototype.realInit2 = function() {
 
             thisB.tierHolder.scrollTop += delta;
         }
-    }, false); 
+    }, false);
 
     this.tierHolderHolder.addEventListener('touchstart', function(ev) {return thisB.touchStartHandler(ev)}, false);
     this.tierHolderHolder.addEventListener('touchmove', function(ev) {return thisB.touchMoveHandler(ev)}, false);
@@ -439,12 +470,12 @@ Browser.prototype.realInit2 = function() {
                 thisB.zoomSliderValue = newZoom;
                 thisB.zoom(Math.exp((1.0 * newZoom) / thisB.zoomExpt));
             }
-            ev.stopPropagation(); ev.preventDefault();      
+            ev.stopPropagation(); ev.preventDefault();
         } else if (ev.keyCode == 85) { // u
             if (thisB.uiMode === 'opts') { // if the options are visible, toggle the checkbox too
                 var check = document.getElementById("singleBaseHightlightButton").checked;
                 document.getElementById("singleBaseHightlightButton").checked = !check;
-            } 
+            }
             thisB.singleBaseHighlight = !thisB.singleBaseHighlight;
             thisB.positionRuler();
             ev.stopPropagation(); ev.preventDefault();
@@ -469,7 +500,7 @@ Browser.prototype.realInit2 = function() {
                 var st = thisB.getSelectedTier();
                 if (st < 0) return;
                 var tt = thisB.tiers[st];
-  
+
                 if (tt.quantLeapThreshold) {
                     var th = tt.subtiers[0].height;
                     var tq = tt.subtiers[0].quant;
@@ -483,7 +514,7 @@ Browser.prototype.realInit2 = function() {
                     tt.mergeConfig({quantLeapThreshold: qmin + ((Math.round((tt.quantLeapThreshold - qmin)/qscale)|0)+1)*qscale});
 
                     tt.notify('Threshold: ' + formatQuantLabel(tt.quantLeapThreshold));
-                }                
+                }
             } else if (ev.altKey) {
                 var cnt = thisB.selectedTiers.length;
                 if (cnt == 0)
@@ -700,7 +731,7 @@ Browser.prototype.realInit2 = function() {
         var source = this.sources[t];
         if (!source)
             continue;
-        
+
         var config = {};
         if (this.restoredConfigs) {
             config = this.restoredConfigs[t];
@@ -748,12 +779,14 @@ Browser.prototype.realInit2 = function() {
                         var tdb;
                         if (hc.genome)
                             tdb = hub.genomes[hc.genome];
-                        else 
+                        else
                             tdb = hub.genomes[thisB.coordSystem.ucscName];
 
                         if (tdb) {
-                            if (hc.mapping) 
+                            if (hc.mapping)
                                 tdb.mapping = hc.mapping;
+                            if (hc.label)
+                                tdb.hub.altLabel = hc.label
                             thisB.hubObjects.push(tdb);
                         }
                     }
@@ -783,7 +816,7 @@ Browser.prototype.realInit2 = function() {
     });
 }
 
-// 
+//
 // Touch event support
 //
 
@@ -805,7 +838,7 @@ Browser.prototype.touchMoveHandler = function(ev) {
     // we don't manage ourselves.
 
     ev.stopPropagation(); ev.preventDefault();
-    
+
     if (ev.touches.length == 1) {
         var touchX = ev.touches[0].pageX;
         var touchY = ev.touches[0].pageY;
@@ -825,7 +858,7 @@ Browser.prototype.touchMoveHandler = function(ev) {
             this.scale = this.zoomInitialScale * (sep/this.zoomInitialSep);
             this.viewStart = scp - (cp/this.scale)|0;
             for (var i = 0; i < this.tiers.length; ++i) {
-                this.tiers[i].draw();
+                tiers[i].getRenderer().drawTier(tiers[i]);
             }
         }
         this.zoomLastSep = sep;
@@ -882,7 +915,7 @@ Browser.prototype.realMakeTier = function(source, config) {
         var viewCenter = (thisB.viewStart + thisB.viewEnd)/2;
         var offset = (tier.glyphCacheOrigin - thisB.viewStart)*thisB.scale;
         rx -= offset;
-       
+
         return glyphLookup(glyphs, rx, ry);
     }
 
@@ -901,7 +934,7 @@ Browser.prototype.realMakeTier = function(source, config) {
         window.removeEventListener('mouseup', dragUpHandler, true);
         thisB.move((ev.clientX - dragMoveOrigin)); // Snap back (FIXME: consider animation)
     }
-        
+
 
     tier.viewport.addEventListener('mousedown', function(ev) {
         thisB.browserHolder.focus();
@@ -1055,7 +1088,7 @@ Browser.prototype.realMakeTier = function(source, config) {
         }
     }, false);
 
-    
+
     var dragLabel;
     var dragTierHolder;
     var dragTierHolderScrollLimit;
@@ -1089,16 +1122,16 @@ Browser.prototype.realMakeTier = function(source, config) {
 
             yAtLastReorder = ev.clientY;
         }
-        
+
         var holderBCR = dragTierHolder.getBoundingClientRect();
-        dragLabel.style.left = (label.getBoundingClientRect().left - holderBCR.left) + 'px'; 
+        dragLabel.style.left = (label.getBoundingClientRect().left - holderBCR.left) + 'px';
         dragLabel.style.top = (ev.clientY - holderBCR.top + dragTierHolder.scrollTop - 10) + 'px';
 
         var pty = ev.clientY - holderBCR.top + dragTierHolder.scrollTop;
         for (var ti = 0; ti < thisB.tiers.length; ++ti) {
             var tt = thisB.tiers[ti];
             if (tt.pinned ^ tier.pinned)
-                continue; 
+                continue;
 
             var ttr = tt.row.getBoundingClientRect();
             pty -= (ttr.bottom - ttr.top);
@@ -1126,8 +1159,8 @@ Browser.prototype.realMakeTier = function(source, config) {
         if (dragLabel.offsetTop < dragTierHolder.scrollTop) {
             dragTierHolder.scrollTop -= (dragTierHolder.scrollTop - dragLabel.offsetTop);
         } else if ((dragLabel.offsetTop + dragLabel.offsetHeight) > (dragTierHolder.scrollTop + dragTierHolder.offsetHeight)) {
-            dragTierHolder.scrollTop = Math.min(dragTierHolder.scrollTop + 
-                                                   (dragLabel.offsetTop + dragLabel.offsetHeight) - 
+            dragTierHolder.scrollTop = Math.min(dragTierHolder.scrollTop +
+                                                   (dragLabel.offsetTop + dragLabel.offsetHeight) -
                                                    (dragTierHolder.scrollTop + dragTierHolder.offsetHeight),
                                                 dragTierHolderScrollLimit);
         }
@@ -1165,7 +1198,7 @@ Browser.prototype.realMakeTier = function(source, config) {
     }, false);
 
     this.tiers.push(tier);  // NB this currently tells any extant knownSpace about the new tier.
-    
+
  // fetches stylesheet
     return tier.init().then(function (updatedTier) {
         updatedTier.currentlyHeight = 50;
@@ -1191,13 +1224,16 @@ Browser.prototype.reorderTiers = function() {
     var pinnedTiers = [], unpinnedTiers = [];
     for (var i = 0; i < this.tiers.length; ++i) {
         var t = this.tiers[i];
+        var visible = ['sub','dummy'].indexOf(this.tiers[i].dasSource.renderer) === -1;
         if (t.pinned && !this.disablePinning) {
             pinnedTiers.push(t);
-            this.pinnedTierHolder.appendChild(this.tiers[i].row);
+            if (visible)
+                this.pinnedTierHolder.appendChild(this.tiers[i].row);
             hasPinned = true;
         } else {
             unpinnedTiers.push(t);
-            this.tierHolder.appendChild(this.tiers[i].row);
+            if (visible)
+                this.tierHolder.appendChild(this.tiers[i].row);
         }
     }
 
@@ -1233,9 +1269,26 @@ Browser.prototype.withPreservedSelection = function(f) {
 }
 
 Browser.prototype.refreshTier = function(tier, tierCallback) {
-    tierCallback = tierCallback || defaultTierRenderer;
-    if (this.knownSpace) {
-        this.knownSpace.invalidate(tier, tierCallback);
+    var renderer = this.getTierRenderer(tier);
+    if (tier.dasSource.renderer === 'multi') {
+        renderer.drawTier(tier);
+    } else {
+        var renderCallback = tierCallback || renderer.renderTier;
+        if (this.knownSpace) {
+            this.knownSpace.invalidate(tier, renderCallback);
+        }
+    }
+}
+
+Browser.prototype.getTierRenderer = function(tier) {
+    var renderer = tier.dasSource.renderer || this.defaultRenderer;
+    if (typeof(renderer) === 'string') {
+        return this.renderers[renderer];
+    } else if (typeof(renderer.renderTier) === 'function' &&
+               typeof(renderer.drawTier) === 'function') {
+        return renderer;
+    } else {
+        console.log("Tier doesn't have a renderer");
     }
 }
 
@@ -1247,7 +1300,7 @@ Browser.prototype._ensureTiersGrouped = function(down) {
         var t = this.tiers[ti];
         if (t.dasSource.tierGroup) {
             pusho(groupedTiers, t.dasSource.tierGroup, t);
-        }   
+        }
     }
 
     var newTiers = [];
@@ -1287,7 +1340,7 @@ Browser.prototype.arrangeTiers = function() {
                 pusho(groupedTiers, t.dasSource.tierGroup, t);
             }
         }
-        
+
     }
     for (var ti = 0; ti < this.tiers.length; ++ti) {
         var t = this.tiers[ti];
@@ -1332,7 +1385,7 @@ Browser.prototype.arrangeTiers = function() {
         for (var ti = 0; ti < arrangedTiers.length; ++ti) {
             var t = arrangedTiers[ti];
             t.setBackground(this.tierBackgroundColors[ti % this.tierBackgroundColors.length]);
-            if (t.dasSource.tierGroup) 
+            if (t.dasSource.tierGroup)
                 t.label.style.left = '18px';
             else
                 t.label.style.left = '2px';
@@ -1342,19 +1395,17 @@ Browser.prototype.arrangeTiers = function() {
 }
 
 Browser.prototype.refresh = function() {
-
-    this.retrieveTierData(this.tiers, defaultTierRenderer);
+    this.retrieveTierData(this.tiers);
     this.drawOverlays();
     this.positionRuler();
 
 };
 
 var defaultTierRenderer = function(status, tier) {
-    tier.draw();
-    tier.updateStatus(status);
+    console.log("DEPRECATED!");
 }
 
-Browser.prototype.retrieveTierData = function(tiers, tierRendererCallback) {
+Browser.prototype.retrieveTierData = function(tiers) {
     this.notifyLocation();
     var width = (this.viewEnd - this.viewStart) + 1;
     var minExtraW = (100.0/this.scale)|0;
@@ -1386,7 +1437,7 @@ Browser.prototype.retrieveTierData = function(tiers, tierRendererCallback) {
         // known space is created based on the entire tier list, for future caching purposes, even if only a subset of the tiers are needed to be rendered now.
         this.knownSpace = new KnownSpace(this.tiers, this.chr, outerDrawnStart, outerDrawnEnd, scaledQuantRes, ss);
     }
-    
+
     var seg = this.knownSpace.bestCacheOverlapping(this.chr, innerDrawnStart, innerDrawnEnd);
     if (seg && seg.min <= innerDrawnStart && seg.max >= innerDrawnEnd) {
         this.drawnStart = Math.max(seg.min, outerDrawnStart);
@@ -1396,7 +1447,11 @@ Browser.prototype.retrieveTierData = function(tiers, tierRendererCallback) {
         this.drawnEnd = outerDrawnEnd;
     }
     // send in the subset of tiers to retrieve.
-    this.knownSpace.retrieveFeatures(tiers, this.chr, this.drawnStart, this.drawnEnd, scaledQuantRes, tierRendererCallback);
+    this.knownSpace.retrieveFeatures(tiers,
+                                     this.chr,
+                                     this.drawnStart,
+                                     this.drawnEnd,
+                                     scaledQuantRes);
 }
 
 function setSources(msh, availableSources, maybeMapping) {
@@ -1456,13 +1511,13 @@ Browser.prototype.queryRegistry = function(maybeMapping, tryCache) {
             var scoords = source.coords[0];
             if (scoords.taxon != coords.taxon || scoords.auth != coords.auth || scoords.version != coords.version) {
                 continue;
-            }   
+            }
             availableSources.push(source);
         }
 
         localStorage['dalliance.registry.' + cacheHash + '.sources'] = JSON.stringify(availableSources);
         localStorage['dalliance.registry.' + cacheHash + '.last_queried'] = '' + Date.now();
-        
+
         setSources(msh, availableSources, maybeMapping);
     }, function(error) {
         // msh.set(null);
@@ -1526,7 +1581,7 @@ Browser.prototype.zoom = function(factor) {
     }
     this.scale = this.featurePanelWidth / (this.viewEnd - this.viewStart)
     var width = this.viewEnd - this.viewStart + 1;
-    
+
     var scaleRat = (this.scale / this.scaleAtLastRedraw);
 
     this.notifyLocation();
@@ -1537,7 +1592,7 @@ Browser.prototype.spaceCheck = function(dontRefresh) {
     if (!this.knownSpace || this.knownSpace.chr !== this.chr) {
         this.refresh();
         return;
-    } 
+    }
 
     var width = ((this.viewEnd - this.viewStart)|0) + 1;
     var minExtraW = (100.0/this.scale)|0;
@@ -1618,7 +1673,7 @@ Browser.prototype.removeTier = function(conf, force) {
     } else {
         for (var ti = 0; ti < this.tiers.length; ++ti) {
             var ts = this.tiers[ti].dasSource;
-            
+
             if (sourcesAreEqual(conf, ts)) {
                 target = ti; break;
             }
@@ -1686,6 +1741,8 @@ Browser.prototype._getSequenceSource = function() {
         if (s.provides_entrypoints || s.tier_type == 'sequence' || s.twoBitURI || s.twoBitBlob) {
             if (s.twoBitURI || s.twoBitBlob) {
                 return new TwoBitSequenceSource(s);
+            } else if (s.ensemblURI) {
+                return new EnsemblSequenceSource(s);
             } else {
                 return new DASSequenceSource(s);
             }
@@ -1790,7 +1847,7 @@ Browser.prototype._setLocation = function(newChr, newMin, newMax, newChrInfo, ca
     var newZS, oldZS;
     oldZS = this.zoomSliderValue;
     this.zoomSliderValue = newZS = this.zoomExpt * Math.log((this.viewEnd - this.viewStart + 1) / this.zoomBase);
-    
+
     if (scaleChanged || chrChanged) {
         for (var i = 0; i < this.tiers.length; ++i) {
             this.tiers[i].viewportHolder.style.left = '5000px';
@@ -1798,6 +1855,9 @@ Browser.prototype._setLocation = function(newChr, newMin, newMax, newChrInfo, ca
         }
 
         this.refresh();
+        // var self = this;
+        // this.tiers.forEach(function(tier) {self.refreshTier(tier);});
+        // this.refreshTier
 
         if (this.savedZoom) {
             newZS -= this.zoomMin;
@@ -1814,7 +1874,7 @@ Browser.prototype._setLocation = function(newChr, newMin, newMax, newChrInfo, ca
         }
     } else {
         var viewCenter = (this.viewStart + this.viewEnd)/2;
-    
+
         for (var i = 0; i < this.tiers.length; ++i) {
             var offset = (this.viewStart - this.tiers[i].norigin)*this.scale;
             this.tiers[i].viewportHolder.style.left = '' + ((-offset|0) - 1000) + 'px';
@@ -1924,14 +1984,14 @@ Browser.prototype.notifyLocation = function() {
     for (var lli = 0; lli < this.viewListeners.length; ++lli) {
         try {
             this.viewListeners[lli](
-                this.chr, 
-                nvs, 
-                nve, 
-                this.zoomSliderValue, 
+                this.chr,
+                nvs,
+                nve,
+                this.zoomSliderValue,
                 {current: this.zoomSliderValue,
                  alternate: (this.savedZoom+this.zoomMin) || this.zoomMin,
                  isSnapZooming: this.isSnapZooming,
-                 min: this.zoomMin, 
+                 min: this.zoomMin,
                  max: this.zoomMax},
                  this.viewStart,
                  this.viewEnd);
@@ -1986,7 +2046,7 @@ Browser.prototype.notifyRegionSelect = function(chr, min, max) {
 
 Browser.prototype.highlightRegion = function(chr, min, max) {
     var thisB = this;
-    
+
     if (chr == this.chr) {
         return this._highlightRegion(chr, min, max);
     }
@@ -2066,7 +2126,7 @@ Browser.prototype.featuresInRegion = function(chr, min, max) {
 
 
 Browser.prototype.getSelectedTier = function() {
-    if (this.selectedTiers.length > 0) 
+    if (this.selectedTiers.length > 0)
         return this.selectedTiers[0];
     else
         return -1;
@@ -2170,14 +2230,14 @@ Browser.prototype.positionRuler = function() {
         this.ruler2.style.borderWidth = '1px';
         if (this.scale < 1) {
             this.ruler2.style.width = '0px';
-            this.ruler2.style.borderRightWidth = '0px' 
+            this.ruler2.style.borderRightWidth = '0px'
         } else {
             this.ruler2.style.width = this.scale + 'px';
-            this.ruler2.style.borderRightWidth = '1px' 
-        } 
+            this.ruler2.style.borderRightWidth = '1px'
+        }
         // Position accompanying single base location text
         this.locSingleBase.style.visibility = 'visible';
-        var centreOffset = this.featurePanelWidth/2 - this.locSingleBase.offsetWidth/2 + this.ruler2.offsetWidth/2; 
+        var centreOffset = this.featurePanelWidth/2 - this.locSingleBase.offsetWidth/2 + this.ruler2.offsetWidth/2;
         this.locSingleBase.style.left = '' + (centreOffset|0) + 'px';
     } else {
         this.locSingleBase.style.visibility = 'hidden';
@@ -2185,9 +2245,9 @@ Browser.prototype.positionRuler = function() {
         this.ruler2.style.borderWidth = '0px';
         this.ruler2.style.display = this.rulerLocation == 'center' ? 'none' : 'block';
     }
-   
+
     this.ruler2.style.left = '' + ((this.featurePanelWidth/2)|0) + 'px';
-    
+
     for (var ti = 0; ti < this.tiers.length; ++ti) {
         var tier = this.tiers[ti];
         var q = tier.quantOverlay;
@@ -2216,7 +2276,7 @@ Browser.prototype.featureDoubleClick = function(hit, rx, ry) {
 
     var fstart = (((f.min|0) - (this.viewStart|0)) * this.scale);
     var fwidth = (((f.max - f.min) + 1) * this.scale);
-    
+
     var newMid = (((f.min|0) + (f.max|0)))/2;
     if (fwidth > 10) {
         var frac = (1.0 * (rx - fstart)) / fwidth;
@@ -2233,9 +2293,9 @@ Browser.prototype.featureDoubleClick = function(hit, rx, ry) {
 
 Browser.prototype.zoomForScale = function(scale) {
     var ssScale;
-    if (scale > 0.2) {
+    if (scale > this.highZoomThreshold) {
         ssScale = 'high';
-    } else if (scale > 0.01) {
+    } else if (scale > this.mediumZoomThreshold) {
         ssScale = 'medium';
     } else  {
         ssScale = 'low';
@@ -2249,11 +2309,12 @@ Browser.prototype.zoomForCurrentScale = function() {
 
 Browser.prototype.updateHeight = function() {
     var tierTotal = 0;
-    for (var ti = 0; ti < this.tiers.length; ++ti) 
+    for (var ti = 0; ti < this.tiers.length; ++ti)
         tierTotal += (this.tiers[ti].currentHeight || 30);
     this.ruler.style.height = '' + tierTotal + 'px';
     this.ruler2.style.height = '' + tierTotal + 'px';
     this.browserHolder.style.display = 'block';
+    this.browserHolder.style.display = '-webkit-flex';
     this.browserHolder.style.display = 'flex';
     // this.svgHolder.style.maxHeight = '' + Math.max(tierTotal, 500) + 'px';
 }
@@ -2261,7 +2322,7 @@ Browser.prototype.updateHeight = function() {
 Browser.prototype.scrollArrowKey = function(ev, dir) {
     if (this.reverseKeyScrolling)
         dir = -dir;
-    
+
     if (ev.ctrlKey || ev.metaKey) {
         var fedge = false;
         if(ev.shiftKey){
@@ -2316,7 +2377,7 @@ Browser.prototype.leap = function(dir, fedge) {
                   if (nxt) {
                       var nmin = nxt.min;
                       var nmax = nxt.max;
-                      if (fedge) { 
+                      if (fedge) {
                         if (dir > 0) {
                           if (nmin>pos+1) {
                               nmax=nmin;
@@ -2331,7 +2392,7 @@ Browser.prototype.leap = function(dir, fedge) {
                             } else {
                                 nmax=nmin;
                             }
-                        } 
+                        }
                       }
                       var wid = thisB.viewEnd - thisB.viewStart + 1;
                       if(parseFloat(wid/2) == parseInt(wid/2)){wid--;}
@@ -2364,7 +2425,7 @@ function glyphLookup(glyphs, rx, ry, matches) {
             } else if (g.group) {
                 matches.push(g.group);
             }
-    
+
             if (g.glyphs) {
                 return glyphLookup(g.glyphs, rx, ry, matches);
             } else if (g.glyph) {
@@ -2389,7 +2450,7 @@ Browser.prototype.nameForCoordSystem = function(cs) {
     }
     if (primary != null && ucsc != null)
         return primary + '/' + ucsc;
-    else 
+    else
         return primary || ucsc || 'unknown';
 }
 
@@ -2448,6 +2509,12 @@ Browser.prototype.getWorker = function() {
     return this.fetchWorkers[this.nextWorker++];
 }
 
+Browser.prototype.registerResolver = function(resolver) {
+    var id = 'res' + (++this.resolverSeed);
+    this.resolvers[id] = resolver;
+    return id;
+}
+
 function FetchWorker(browser, worker) {
     var thisB = this;
     this.tagSeed = 0;
@@ -2456,10 +2523,34 @@ function FetchWorker(browser, worker) {
     this.worker = worker;
 
     this.worker.onmessage = function(ev) {
-        var cb = thisB.callbacks[ev.data.tag];
-        if (cb) {
-            cb(ev.data.result, ev.data.error);
-            delete thisB.callbacks[ev.data.tag];
+        var data = ev.data;
+
+        if (!data.cmd) {
+            var cb = thisB.callbacks[data.tag];
+            if (cb) {
+                cb(data.result, data.error);
+                delete thisB.callbacks[data.tag];
+            }
+        } else if (data.cmd == 'resolve') {
+            var resolver = thisB.browser.resolvers[data.resolver];
+            if (resolver) {
+                resolver(data.url).then(function(url) {
+                    thisB.worker.postMessage({
+                        tag: data.tag,
+                        url: url
+                    });
+                }).catch(function(err){
+                    console.log(err);
+                    thisB.worker.postMessage({
+                        tag: data.tag,
+                        err: err.toString()
+                    });
+                });
+            } else {
+                console.log('No resolver ' + data.resolver);
+            }
+        } else {
+            console.log('Bad worker callback ' + data.cmd);
         }
     };
 }
@@ -2486,13 +2577,13 @@ function makeFetchWorker(browser) {
                 console.log('Worker initialized');
                 resolve(new FetchWorker(browser, worker))
             }
-            
+
         }
 
         worker.onerror = function(ev) {
             reject(ev.message);
         }
-    });    
+    });
 }
 
 FetchWorker.prototype.postCommand = function(cmd, callback, transfer) {
@@ -2517,6 +2608,7 @@ if (typeof(module) !== 'undefined') {
 
     var sa = require('./sourceadapters');
     var TwoBitSequenceSource = sa.TwoBitSequenceSource;
+    var EnsemblSequenceSource = sa.EnsemblSequenceSource;
     var DASSequenceSource = sa.DASSequenceSource;
 
     var KnownSpace = require('./kspace').KnownSpace;

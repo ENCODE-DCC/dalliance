@@ -89,6 +89,17 @@ function _getBaiRefLength(uncba, offset) {
 
 
 function makeBam(data, bai, indexChunks, callback, attempted) {
+    // Do an initial probe on the BAM file to catch any mixed-content errors.
+    data.slice(0, 10).fetch(function(header) {
+        if (header) {
+            return makeBam2(data, bai, indexChunks, callback, attempted);
+        } else {
+            return callback(null, "Couldn't access BAM.");
+        }
+    }, {timeout: 5000});
+}
+
+function makeBam2(data, bai, indexChunks, callback, attempted) {
     var bam = new BamFile();
     bam.data = data;
     bam.bai = bai;
@@ -185,16 +196,16 @@ function makeBam(data, bai, indexChunks, callback, attempted) {
                     bam.bai.url = bam.data.url.replace(new RegExp('.bam$'), '.bai');
                     
                      // True lets us know we are making a second attempt
-                    makeBam(data, bam.bai, indexChunks, callback, true);
+                    makeBam2(data, bam.bai, indexChunks, callback, true);
                 }
                 else {
                     // We've attempted x.bam.bai & x.bai and nothing worked
                     callback(null, result);
                 }
             } else {
-              bam.data.slice(0, minBlockIndex).fetch(parseBamHeader, {timeout: 5000});
+              bam.data.slice(0, minBlockIndex).fetch(parseBamHeader);
             }
-        }, {timeout: 5000});   // Timeout on first request to catch Chrome mixed-content error.
+        });   // Timeout on first request to catch Chrome mixed-content error.
     } else {
         var chunks = bam.indexChunks.chunks;
         bam.indices = []
@@ -238,10 +249,11 @@ BamFile.prototype.blocksForRange = function(refId, min, max) {
             p +=  (nchnk * 16);
         }
     }
-    // console.log('leafChunks = ' + miniJSONify(leafChunks));
-    // console.log('otherChunks = ' + miniJSONify(otherChunks));
+    // console.log('leafChunks = ' + JSON.stringify(leafChunks));
+    // console.log('otherChunks = ' + JSON.stringify(otherChunks));
 
     var nintv = readInt(index, p);
+    // console.log('nintv=' + nintv);
     var lowest = null;
     var minLin = Math.min(min>>14, nintv - 1), maxLin = Math.min(max>>14, nintv - 1);
     for (var i = minLin; i <= maxLin; ++i) {
@@ -249,22 +261,22 @@ BamFile.prototype.blocksForRange = function(refId, min, max) {
         if (!lb) {
             continue;
         }
-        if (!lowest || lb.block < lowest.block || lb.offset < lowest.offset) {
+        if (!lowest || lb.block < lowest.block || (lb.block == lowest.block && lb.offset < lowest.offset)) {
             lowest = lb;
         }
     }
     // console.log('Lowest LB = ' + lowest);
-    
+
     var prunedOtherChunks = [];
     if (lowest != null) {
         for (var i = 0; i < otherChunks.length; ++i) {
             var chnk = otherChunks[i];
-            if (chnk.maxv.block >= lowest.block && chnk.maxv.offset >= lowest.offset) {
+            if (chnk.maxv.block > lowest.block || (chnk.maxv.block == lowest.block && chnk.maxv.offset >= lowest.offset)) {
                 prunedOtherChunks.push(chnk);
             }
         }
     }
-    // console.log('prunedOtherChunks = ' + miniJSONify(prunedOtherChunks));
+    // console.log('prunedOtherChunks = ' + JSON.stringify(prunedOtherChunks));
     otherChunks = prunedOtherChunks;
 
     var intChunks = [];
@@ -297,7 +309,7 @@ BamFile.prototype.blocksForRange = function(refId, min, max) {
         }
         mergedChunks.push(cur);
     }
-    // console.log('mergedChunks = ' + miniJSONify(mergedChunks));
+    // console.log('mergedChunks = ' + JSON.stringify(mergedChunks));
 
     return mergedChunks;
 }
@@ -367,7 +379,7 @@ BamFile.prototype.readBamRecords = function(ba, offset, sink, min, max, chrId, o
     while (true) {
         var blockSize = readInt(ba, offset);
         var blockEnd = offset + blockSize + 4;
-        if (blockEnd >= ba.length) {
+        if (blockEnd > ba.length) {
             return false;
         }
 
@@ -399,17 +411,19 @@ BamFile.prototype.readBamRecords = function(ba, offset, sink, min, max, chrId, o
         if (opts.light)
             record.seqLength = lseq;
 
-        if (!opts.light) {
-            if (nextRef >= 0) {
-                record.nextSegment = this.indexToChr[nextRef];
-                record.nextPos = nextPos;
-            }
-
+        if (!opts.light || opts.includeName) {
             var readName = '';
             for (var j = 0; j < nl-1; ++j) {
                 readName += String.fromCharCode(ba[offset + 36 + j]);
             }
             record.readName = readName;
+        }
+        
+        if (!opts.light) {
+            if (nextRef >= 0) {
+                record.nextSegment = this.indexToChr[nextRef];
+                record.nextPos = nextPos;
+            }
         
             var p = offset + 36 + nl;
 

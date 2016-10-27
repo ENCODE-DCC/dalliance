@@ -13,8 +13,7 @@ var VERSION = {
     CONFIG: 5,
     MAJOR:  0,
     MINOR:  13,
-    MICRO:  5,
-    PATCH:  '',
+    MICRO:  7,
     BRANCH: 'dev'
 };
 
